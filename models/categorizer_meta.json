@@ -1,0 +1,24 @@
+{
+  "classes": [
+    "education",
+    "entertainment",
+    "food",
+    "healthcare",
+    "marketing",
+    "misc",
+    "raw_material",
+    "rent",
+    "salary",
+    "shopping",
+    "subscriptions",
+    "transport",
+    "travel",
+    "utilities"
+  ],
+  "accuracy": 0.997,
+  "n_features": 5000,
+  "ngram_range": [
+    1,
+    2
+  ]
+}

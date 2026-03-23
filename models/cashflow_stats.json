@@ -1,0 +1,7 @@
+{
+  "model_type": "arima",
+  "mean_daily": 7227.945273631841,
+  "std_daily": 184948.8215611758,
+  "last_balance": 1652817.0,
+  "last_date": "2026-03-20"
+}
