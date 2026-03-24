@@ -8,16 +8,14 @@ from typing import Optional
 
 def _safe_pct(new, old):
     if old == 0:
-        return None
+        return 0.0   # 🔥 instead of None (important for stability)
+
     pct = (new - old) / old * 100
 
-    if pct > 200:
-        pct = 200
-    elif pct < -200:
-        pct = -200
+    # 🔥 clamp extreme values
+    pct = max(min(pct, 200), -200)
 
     return round(pct, 1)
-
 
 def week_over_week(df, user_id, category=None, ref_date=None):
     if ref_date is None:
@@ -37,12 +35,11 @@ def week_over_week(df, user_id, category=None, ref_date=None):
     ]['amount'].sum()
 
     pct = _safe_pct(this_week, last_week)
-    if pct is None:
-        return None
+    
 
     direction = 'more' if pct > 0 else 'less'
 
-    if abs(pct) > 100:
+    if abs(pct) > 80:
         level = "significantly"
     elif abs(pct) > 30:
         level = "noticeably"
@@ -155,6 +152,7 @@ def personal_daily_avg_insight(df, user_id, amount, category):
 
     if ratio is None:
         return None
+    ratio = min(ratio, 5)  # 🔥 cap extreme ratios
 
     return {
         "type": "personal_average",

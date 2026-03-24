@@ -112,6 +112,16 @@ def train_anomaly_detector(data_path='data/anomaly_data.csv'):
         json.dump(cat_map, f)
 
     X = anom_df[['log_amt', 'cat_code']].values
+    # 🔥 ADD THIS BLOCK (Z-score stats)
+    mean_amt = anom_df['amount'].mean()
+    std_amt  = anom_df['amount'].std()
+
+    stats = {
+    "mean": float(mean_amt),
+    "std": float(std_amt)
+     }
+    with open('models/anomaly_stats.json', 'w') as f:
+        json.dump(stats, f)
 
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
@@ -205,6 +215,9 @@ def train_cashflow_predictor(data_path='data/daily_cashflow.csv'):
             return forecast
 
         forecast = rolling_forecast(series, steps=14)
+
+        # 🔥 CLAMP VALUES (IMPORTANT)
+        forecast = [max(min(x, 200000), -100000) for x in forecast]
         print("\n14-day forecast (Rolling Mean):")
         for i, v in enumerate(forecast, 1):
             print(f"  Day +{i:2d}: ₹{v:,.0f}")
