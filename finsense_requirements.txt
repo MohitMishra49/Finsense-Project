@@ -12,3 +12,5 @@ statsmodels==0.14.1
 
 joblib==1.4.2
 pydantic==2.6.4
+
+requests==2.31.0
