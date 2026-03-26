@@ -6,9 +6,11 @@ from pydantic import BaseModel, Field
 from typing import Optional, List
 import pandas as pd
 import os
+import requests
 
 from src.pipeline import analyze_transaction, store
 from src.insights import business_summary as generate_business_summary
+from src.chatbot_engine import build_financial_context
 
 
 # ── App Setup ────────────────────────────────────────────────
@@ -120,6 +122,112 @@ def batch_analyze(req: BatchRequest):
             results.append({"status": "error", "error": str(e)})
 
     return {"results": results, "count": len(results)}
+
+
+class ChatRequest(BaseModel):
+    business_id: str
+    user_id: str
+    message: str
+    description: Optional[str] = None
+    amount: Optional[float] = None
+
+
+@app.post("/chat")
+def chat_endpoint(req: ChatRequest):
+    hf_api_key = os.getenv('HF_API_KEY')
+    if not hf_api_key:
+        raise HTTPException(status_code=500, detail='Missing HF_API_KEY environment variable')
+
+    biz_id = req.business_id.strip().upper()
+    if not biz_id:
+        raise HTTPException(status_code=400, detail='business_id is required')
+
+    history = get_history()
+    if history is None:
+        raise HTTPException(status_code=503, detail='Transaction data not found')
+
+    if biz_id not in history['business_id'].astype(str).str.upper().unique():
+        raise HTTPException(status_code=404, detail=f"Business '{biz_id}' not found")
+
+    ml_result = None
+    if req.description and req.amount is not None:
+        ml_result = analyze_transaction(
+            description=req.description,
+            amount=req.amount,
+            user_id=req.user_id,
+            business_id=biz_id,
+            transaction_history=history,
+        )
+
+    summary, context_str = build_financial_context(biz_id, ml_result=ml_result)
+    print("CONTEXT BUILT for", biz_id)
+
+    # QUICK TEMP FALLBACK (for offline/demo):
+    if os.getenv('DEBUG_CHAT_NO_LLM', '0') == '1':
+        return {
+            'success': True,
+            'business_id': biz_id,
+            'reply': 'Chat working without LLM',
+            'summary': summary,
+            'ml_result': ml_result,
+        }
+
+    hf_url = 'https://router.huggingface.co/v1/chat/completions'
+    hf_model = 'meta-llama/Llama-3.1-8B-Instruct:cerebras'
+
+    system_prompt = f"""You are FinBot, an expert AI financial assistant for SMBs.\n"""
+    user_prompt = f"""User message: {req.message}\n\nFinancial context:\n{context_str}"""
+
+    payload = {
+        'model': hf_model,
+        'messages': [
+            {'role': 'system', 'content': system_prompt},
+            {'role': 'user', 'content': user_prompt},
+        ],
+        'max_tokens': 512,
+        'temperature': 0.7,
+    }
+
+    try:
+        response = requests.post(
+            hf_url,
+            headers={
+                'Authorization': f'Bearer {hf_api_key}',
+                'Content-Type': 'application/json',
+            },
+            json=payload,
+            timeout=60,
+        )
+
+        print('HF STATUS:', response.status_code)
+        print('HF RESPONSE:', response.text)
+
+        if response.status_code != 200:
+            raise HTTPException(status_code=502, detail=f"HF API error {response.status_code}: {response.text}")
+
+        data = response.json()
+
+        if 'choices' not in data or not data['choices']:
+            raise HTTPException(status_code=502, detail={'message': 'Invalid response from HF API', 'body': data})
+
+        reply = data['choices'][0].get('message', {}).get('content', '').strip()
+
+        return {
+            'success': True,
+            'business_id': biz_id,
+            'reply': reply,
+            'summary': summary,
+            'ml_result': ml_result,
+        }
+
+    except Exception as e:
+        print('ERROR:', str(e))
+        return {
+            'success': False,
+            'error': str(e),
+            'business_id': biz_id,
+            'reply': 'Your top expense is food. Try reducing it by 15%.',
+        }
 
 
 @app.get("/business-summary/{business_id}")
