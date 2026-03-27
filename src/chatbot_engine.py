@@ -4,6 +4,7 @@ from typing import Dict, Optional, Tuple
 import pandas as pd
 
 from src.pipeline import analyze_transaction
+from src.forecaster import forecast_cashflow
 
 DATA_DIR = os.getenv('DATA_DIR', 'data')
 TRANSACTIONS_CSV = os.path.join(DATA_DIR, 'transactions.csv')
@@ -172,16 +173,78 @@ def build_comparison_context(biz_id: str) -> str:
     return comparison_str
 
 
-def build_financial_context(business_id: str, ml_result: Optional[dict] = None) -> Tuple[dict, str]:
+def build_financial_context(
+    business_id: str,
+    user_id: Optional[str] = None,
+    business_name: Optional[str] = None,
+    business_type: Optional[str] = None,
+    category: Optional[str] = None,
+    monthly_revenue: Optional[float] = None,
+    ml_result: Optional[dict] = None,
+) -> Tuple[dict, str]:
     _load_data()
     biz_id = business_id.strip().upper()
 
+    business_name_val = business_name or ''
+
     if _all_transactions is None or _all_transactions.empty:
-        raise ValueError('No transaction data loaded')
+        # Cold start on no data
+        if monthly_revenue is not None:
+            revenue_line = f"💰 Monthly Revenue: ₹{monthly_revenue:,.0f}\n\n"
+        else:
+            revenue_line = "💰 Monthly Revenue: N/A\n\n"
+
+        profile_msg = "👋 Welcome! I understand your business.\n\n"
+        profile_msg += f"🏪 Business Name: {business_name_val or 'N/A'}\n"
+        profile_msg += f"🏪 Business Type: {business_type or 'N/A'}\n"
+        profile_msg += f"📊 Category: {category or 'N/A'}\n"
+        profile_msg += revenue_line
+        profile_msg += f"💡 Based on similar {business_type or 'business'} businesses, your main expenses are likely in {category or 'your main category'}.\n\n"
+        profile_msg += "👉 Start adding transactions to unlock:\n"
+        profile_msg += "* Expense tracking\n"
+        profile_msg += "* Anomaly detection\n"
+        profile_msg += "* Cashflow forecasting"
+
+        return ({
+            'mode': 'cold_start',
+            'forecast': {},
+            'summary': {},
+            'business_type': business_type,
+            'category': category,
+            'monthly_revenue': monthly_revenue,
+            'business_name': business_name,
+            'profile_message': profile_msg,
+        }, "Here’s what I can infer so far based on your business profile...")
 
     df = _all_transactions[_all_transactions['business_id'].astype(str).str.upper() == biz_id]
-    if df.empty:
-        raise ValueError(f"Business '{biz_id}' not found")
+    if df.empty or len(df) < 2:
+        # New user cold-start with profile
+        if monthly_revenue is not None:
+            revenue_line = f"💰 Monthly Revenue: ₹{monthly_revenue:,.0f}\n\n"
+        else:
+            revenue_line = "💰 Monthly Revenue: N/A\n\n"
+
+        profile_msg = "👋 Welcome! I understand your business.\n\n"
+        profile_msg += f"🏪 Business Name: {business_name or 'N/A'}\n"
+        profile_msg += f"🏪 Business Type: {business_type or 'N/A'}\n"
+        profile_msg += f"📊 Category: {category or 'N/A'}\n"
+        profile_msg += revenue_line
+        profile_msg += f"💡 Based on similar {business_type or 'business'} businesses, your main expenses are likely in {category or 'your main category'}.\n\n"
+        profile_msg += "👉 Start adding transactions to unlock:\n"
+        profile_msg += "* Expense tracking\n"
+        profile_msg += "* Anomaly detection\n"
+        profile_msg += "* Cashflow forecasting"
+
+        return ({
+            'mode': 'cold_start',
+            'forecast': {},
+            'summary': {},
+            'business_type': business_type,
+            'category': category,
+            'monthly_revenue': monthly_revenue,
+            'business_name': business_name,
+            'profile_message': profile_msg,
+        }, "Here’s what I can infer so far based on your business profile...")
 
     expenses_df = df[df['type'] == 'expense']
     income_df = df[df['type'] == 'income']
@@ -220,6 +283,16 @@ def build_financial_context(business_id: str, ml_result: Optional[dict] = None) 
             except Exception:
                 ml_insights_text += str(insights) + "\n"
 
+    forecast = forecast_cashflow(biz_id)
+
+    mode = 'hybrid' if len(df) < 5 else 'full'
+
+    onboarding_insight = ''
+    if business_type and category and monthly_revenue is not None:
+        onboarding_insight = (
+            f"📊 Based on similar {business_type} businesses, your main expenses are likely around {category}."
+        )
+
     context_str = (
         f"=== FINANCIAL CONTEXT FOR {biz_id} ===\n"
         f"Total Income : ₹{total_income:,.2f}\n"
@@ -235,7 +308,12 @@ def build_financial_context(business_id: str, ml_result: Optional[dict] = None) 
     )
 
     summary_dict = {
+        'mode': mode,
         'business_id': biz_id,
+        'business_name': business_name,
+        'business_type': business_type,
+        'category': category,
+        'monthly_revenue': monthly_revenue,
         'total_income': round(total_income, 2),
         'total_expense': round(total_expense, 2),
         'net_profit': round(net_profit, 2),
@@ -244,11 +322,38 @@ def build_financial_context(business_id: str, ml_result: Optional[dict] = None) 
         'anomalies': anomalies,
         'anomaly_summary': anomaly_summary,
         'peer_comparison': comparison,
+        'forecast': forecast,
         'ml_result': ml_result,
     }
+
+    if onboarding_insight:
+        summary_dict['onboarding_insight'] = onboarding_insight
 
     # Add insights summary from ml_result
     if ml_result and ml_result.get('insights'):
         summary_dict['ml_insights'] = ml_result.get('insights')
 
     return summary_dict, context_str
+
+
+def append_forecast_insights_to_response(response: str, forecast: dict) -> str:
+    """Add forecast based insights to the chatbot text response."""
+    if not response:
+        response = ''
+
+    if forecast and forecast.get('trend'):
+        trend = forecast['trend']
+
+        if trend == 'growing':
+            insight = '📈 Your business is showing a positive growth trend.'
+        elif trend == 'declining':
+            insight = '📉 Your business is showing a declining trend. Consider reducing expenses.'
+        else:
+            insight = '⚖️ Your business is currently stable.'
+
+        response += '\n\n' + insight
+
+    if forecast and forecast.get('summary'):
+        response += f"\n\n📊 Forecast: {forecast['summary']}"
+
+    return response

@@ -17,6 +17,7 @@ from src.explainer  import explain_prediction, explain_anomaly
 from src.insights   import generate_all_insights
 from src.forecaster import forecast_cashflow
 
+
 # ════════════════════════════════════════════════════════════
 # MODEL LOADER — loads once, reused for every request
 # ════════════════════════════════════════════════════════════
@@ -60,6 +61,42 @@ class ModelStore:
 
 # Singleton instance
 store = ModelStore()
+
+
+# ════════════════════════════════════════════════════════════
+# FORECASTING — per-business, derived from real cashflow data
+# ════════════════════════════════════════════════════════════
+def _forecast_cashflow(
+    current_balance: float,
+    days: int = 7,
+    business_id: str = '',
+) -> dict:
+    """
+    Generate a per-business cash flow forecast.
+    Uses src/forecaster.py which reads daily_cashflow_by_business.csv.
+    Each business gets its own unique forecast based on its own history.
+    """
+    try:
+        from src.forecaster import forecast_cashflow
+        return forecast_cashflow(
+            business_id     = business_id or 'UNKNOWN',
+            current_balance = current_balance,
+            days            = days,
+        )
+    except Exception:
+        # Hard fallback — should never reach here
+        daily_forecasts = [
+            {'day': i+1, 'net_cashflow': 0, 'balance': round(current_balance, 2)}
+            for i in range(days)
+        ]
+        return {
+            'days':          days,
+            'daily':         daily_forecasts,
+            'min_balance':   round(current_balance, 2),
+            'final_balance': round(current_balance, 2),
+            'alert':         None,
+            'summary':       f"Projected balance after {days} days: ₹{current_balance:,.0f}",
+        }
 
 
 # ════════════════════════════════════════════════════════════
@@ -145,7 +182,7 @@ def analyze_transaction(
     # Combine ISO forest + Z-score
     is_anomaly = (iso_pred == -1) or anomaly_info.get('is_anomaly', False)
     result['anomaly'] = {
-        'is_anomaly':      bool(is_anomaly),
+        'is_anomaly':      is_anomaly,
         'isolation_score': round(iso_score, 4),
         'z_score':         anomaly_info.get('z_score'),
         'explanation':     anomaly_info['explanation'],
@@ -167,8 +204,11 @@ def analyze_transaction(
         }]
     result['insights'] = insights
 
-    # ── STEP 4: Cash Flow Forecast ──────────────────────────
+    # ── STEP 4: Cash Flow Forecast (per-business) ───────────
     result['forecast'] = forecast_cashflow(business_id, current_balance, forecast_days)
+
+
+
 
     # ── STEP 5: Summary (top-level for quick display) ───────
     top_insight = insights[0]['message'] if insights else None
@@ -178,7 +218,7 @@ def analyze_transaction(
         'category':       category,
         'confidence_pct': explanation['confidence'],
         'top_keywords':   explanation['top_keywords'][:3],
-        'is_anomaly':     bool(is_anomaly),
+        'is_anomaly':     is_anomaly,
         'anomaly_msg':    anomaly_info['explanation'] if is_anomaly else None,
         'key_insight':    top_insight,
         'forecast_alert': forecast_alert,

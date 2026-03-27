@@ -10,7 +10,7 @@ import requests
 
 from src.pipeline import analyze_transaction, store
 from src.insights import business_summary as generate_business_summary
-from src.chatbot_engine import build_financial_context
+from src.chatbot_engine import build_financial_context, append_forecast_insights_to_response
 
 
 # ── App Setup ────────────────────────────────────────────────
@@ -125,8 +125,12 @@ def batch_analyze(req: BatchRequest):
 
 
 class ChatRequest(BaseModel):
-    business_id: str
     user_id: str
+    business_id: str
+    business_name: Optional[str] = None
+    business_type: Optional[str] = None
+    category: Optional[str] = None
+    monthly_revenue: Optional[float] = None
     message: str
     description: Optional[str] = None
     amount: Optional[float] = None
@@ -146,8 +150,8 @@ def chat_endpoint(req: ChatRequest):
     if history is None:
         raise HTTPException(status_code=503, detail='Transaction data not found')
 
-    if biz_id not in history['business_id'].astype(str).str.upper().unique():
-        raise HTTPException(status_code=404, detail=f"Business '{biz_id}' not found")
+    # New business cold start (no 404). We'll onboard if no history exists for biz.
+    all_biz = history['business_id'].astype(str).str.upper().unique().tolist() if not history.empty else []
 
     ml_result = None
     if req.description and req.amount is not None:
@@ -159,8 +163,29 @@ def chat_endpoint(req: ChatRequest):
             transaction_history=history,
         )
 
-    summary, context_str = build_financial_context(biz_id, ml_result=ml_result)
+    summary, context_str = build_financial_context(
+        biz_id,
+        user_id=req.user_id,
+        business_type=req.business_type,
+        category=req.category,
+        monthly_revenue=req.monthly_revenue,
+        ml_result=ml_result,
+    )
     print("CONTEXT BUILT for", biz_id)
+
+    # Cold start with profile-based welcome (no onboarding questions)
+    if summary.get('mode') == 'cold_start':
+        profile_message = summary.get('profile_message', "Here’s what I can infer so far based on your business profile...")
+        profile_message += "\n\n⚠️ These are estimated insights based on similar businesses."
+        profile_message += "\n\n👉 Try: 'Paid 5000 for raw material'"
+
+        return {
+            'success': True,
+            'business_id': biz_id,
+            'reply': profile_message,
+            'summary': summary,
+            'ml_result': ml_result,
+        }
 
     # QUICK TEMP FALLBACK (for offline/demo):
     if os.getenv('DEBUG_CHAT_NO_LLM', '0') == '1':
@@ -211,6 +236,20 @@ def chat_endpoint(req: ChatRequest):
             raise HTTPException(status_code=502, detail={'message': 'Invalid response from HF API', 'body': data})
 
         reply = data['choices'][0].get('message', {}).get('content', '').strip()
+
+        if summary.get('mode') == 'hybrid':
+            reply += "\n\n📊 You're getting started. Add more transactions to unlock deeper insights and forecasting."
+
+        reply = append_forecast_insights_to_response(reply, summary.get('forecast', {}))
+
+        # Ensure structure with mandatory narrative sections when needed
+        if 'Here’s what I can infer so far' in context_str:
+            reply = (
+                "What happened: We don’t have enough historical data yet.\n"
+                "What it means: We’ll start with a simplified view and improve as you add more transactions.\n"
+                "Insight: " + summary.get('onboarding_insight', "Here’s what I can infer so far based on your inputs...") + "\n"
+                "Suggestion: Start by adding your first transaction and a few business details."
+            )
 
         return {
             'success': True,
