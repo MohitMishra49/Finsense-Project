@@ -307,6 +307,17 @@ def build_financial_context(
         f"{ml_insights_text}"
     )
 
+    financial_summary = {
+        'total_income': float(total_income),
+        'total_expense': float(total_expense),
+        'net_profit': float(net_profit),
+        'category_breakdown': {k: round(float(v), 2) for k, v in category_breakdown.items()},
+        'monthly_data': [
+            {'month': row['month'], 'income': float(row.get('income', 0)), 'expense': float(row.get('expense', 0))}
+            for _, row in bdf.groupby(['month', 'type'])['amount'].sum().unstack(fill_value=0).reset_index().iterrows()
+        ]
+    }
+
     summary_dict = {
         'mode': mode,
         'business_id': biz_id,
@@ -324,6 +335,7 @@ def build_financial_context(
         'peer_comparison': comparison,
         'forecast': forecast,
         'ml_result': ml_result,
+        'financial_summary': financial_summary,
     }
 
     if onboarding_insight:

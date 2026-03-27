@@ -184,6 +184,27 @@ def generate_all_insights(df, business_id, user_id, category, amount, ref_date=N
         insights.append(personal)
 
     return insights
+
+
+def generate_expense_insights(category_breakdown):
+    insights = []
+    if not category_breakdown:
+        return insights
+
+    total = sum(category_breakdown.values())
+    if total == 0:
+        return insights
+
+    for cat, amt in category_breakdown.items():
+        pct = (amt / total) * 100
+
+        if pct > 50:
+            insights.append(f"⚠️ {cat} dominates {pct:.1f}% of expenses")
+        elif pct > 25:
+            insights.append(f"📊 {cat} is a major expense at {pct:.1f}%")
+
+    return insights
+
 def business_summary(df, business_id):
     data = df[df['business_id'] == business_id]
 

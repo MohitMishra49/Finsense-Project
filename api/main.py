@@ -5,8 +5,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, List
 import pandas as pd
+import numpy as np
 import os
 import requests
+from datetime import datetime, timedelta
 
 from src.pipeline import analyze_transaction, store
 from src.insights import business_summary as generate_business_summary
@@ -38,6 +40,8 @@ async def startup_event():
 
 # ── Load Transaction History ────────────────────────────────
 _history_df: Optional[pd.DataFrame] = None
+_cashflow_df: Optional[pd.DataFrame] = None
+
 
 def get_history() -> Optional[pd.DataFrame]:
     global _history_df
@@ -45,6 +49,150 @@ def get_history() -> Optional[pd.DataFrame]:
         _history_df = pd.read_csv('data/transactions.csv')
         _history_df['date'] = pd.to_datetime(_history_df['date'])
     return _history_df
+
+
+def get_cashflow() -> Optional[pd.DataFrame]:
+    global _cashflow_df
+    if _cashflow_df is not None:
+        return _cashflow_df
+
+    paths = [
+        os.path.join('data', 'daily_cashflow_by_business.csv'),
+        os.path.join('data', 'daily_cashflow.csv'),
+    ]
+
+    for path in paths:
+        if os.path.exists(path):
+            _cashflow_df = pd.read_csv(path)
+            if 'date' in _cashflow_df.columns:
+                _cashflow_df['date'] = pd.to_datetime(_cashflow_df['date'], errors='coerce')
+            return _cashflow_df
+
+    return None
+
+
+def compute_forecast(business_id: str, days: int = 7, current_balance: Optional[float] = None) -> Optional[dict]:
+    if days < 1 or days > 30:
+        raise ValueError('days must be between 1 and 30')
+
+    cf = get_cashflow()
+    if cf is None or cf.empty:
+        return None
+
+    biz_id = business_id.strip().upper()
+    if 'business_id' not in cf.columns:
+        return None
+
+    bdf = cf[cf['business_id'].astype(str).str.upper() == biz_id].copy()
+    if bdf.empty:
+        return None
+
+    bdf = bdf.sort_values('date').reset_index(drop=True)
+    if 'net_cashflow' not in bdf.columns:
+        return None
+
+    net_series = bdf['net_cashflow'].astype(float)
+    recent_30 = net_series.tail(30)
+
+    window = min(14, len(recent_30))
+    if window <= 0:
+        return None
+
+    weights = np.exp(np.linspace(-1, 0, window))
+    weights = weights / weights.sum()
+    recent = recent_30.tail(window).values
+
+    base_daily_net = float(np.sum(recent * weights))
+
+    std_daily = float(net_series.std()) if len(net_series) > 3 else abs(base_daily_net) * 0.15
+    std_daily = min(std_daily, abs(base_daily_net) * 0.3) if abs(base_daily_net) > 0 else 1.0
+
+    if current_balance is not None:
+        running_balance = float(current_balance)
+    elif 'cumulative_balance' in bdf.columns and not bdf['cumulative_balance'].dropna().empty:
+        running_balance = float(bdf['cumulative_balance'].iloc[-1])
+    else:
+        running_balance = 0.0
+
+    np.random.seed(42)
+    daily_forecast = []
+    zero_date = None
+
+    for i in range(days):
+        noise = np.random.normal(0, std_daily * 0.1)
+        daily_net = base_daily_net + noise
+        running_balance += daily_net
+
+        balance = round(float(running_balance), 2)
+        if zero_date is None and balance <= 0:
+            last_date = bdf['date'].max() if 'date' in bdf.columns else datetime.now()
+            zero_date = (last_date + timedelta(days=i + 1)).strftime('%Y-%m-%d')
+
+        daily_forecast.append({
+            'day': i + 1,
+            'net_cashflow': round(float(daily_net), 2),
+            'balance': balance,
+        })
+
+    min_balance = min(d['balance'] for d in daily_forecast)
+    final_balance = daily_forecast[-1]['balance']
+    trend = 'growing' if base_daily_net > 0 else 'declining'
+
+    alert = None
+    if min_balance < 0:
+        low_day = next(d['day'] for d in daily_forecast if d['balance'] == min_balance)
+        alert = f"Balance turns negative by Day {low_day} (₹{min_balance:,.0f}) — urgent action needed"
+    elif min_balance < 10000:
+        low_day = next(d['day'] for d in daily_forecast if d['balance'] == min_balance)
+        alert = f"Balance may drop to ₹{min_balance:,.0f} by Day {low_day} — consider reducing expenses"
+
+    runway_days = None
+    if base_daily_net < 0 and base_daily_net != 0:
+        runway_days = int(abs(running_balance / base_daily_net)) if base_daily_net != 0 else None
+
+    mom_pct = 0.0
+    if len(bdf) >= 60:
+        last_30 = bdf.tail(30)['net_cashflow'].sum()
+        prev_30 = bdf.tail(60).head(30)['net_cashflow'].sum()
+        mom_pct = round((last_30 - prev_30) / abs(prev_30) * 100, 2) if prev_30 != 0 else 0.0
+
+    summary = f"Projected balance after {days} days: ₹{int(final_balance):,} ({trend})"
+    insights = [f"Cashflow change vs prior month: {mom_pct:.1f}%"] if len(bdf) >= 60 else []
+
+    return {
+        'business_id': biz_id,
+        'days': days,
+        'starting_balance': round(float(running_balance - sum(d['net_cashflow'] for d in daily_forecast)), 2),
+        'daily': daily_forecast,
+        'trend': trend,
+        'min_balance': round(min_balance, 2),
+        'final_balance': round(final_balance, 2),
+        'alert': alert,
+        'runway_days': runway_days,
+        'zero_date': zero_date,
+        'mom_pct': mom_pct,
+        'insights': insights,
+        'summary': summary,
+    }
+
+
+@app.get('/forecast/{business_id}')
+def forecast_endpoint(business_id: str, days: int = 7, balance: Optional[float] = None):
+    if days < 1 or days > 30:
+        raise HTTPException(status_code=400, detail='days must be between 1 and 30')
+
+    try:
+        result = compute_forecast(business_id, days=days, current_balance=balance)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if not result:
+        raise HTTPException(status_code=404, detail=f'Cashflow data not found for {business_id}')
+
+    return {
+        'success': True,
+        'data': result,
+    }
 
 
 # ── Request Schemas ─────────────────────────────────────────
@@ -241,6 +389,18 @@ def chat_endpoint(req: ChatRequest):
             reply += "\n\n📊 You're getting started. Add more transactions to unlock deeper insights and forecasting."
 
         reply = append_forecast_insights_to_response(reply, summary.get('forecast', {}))
+
+        financial_summary = summary.get('financial_summary', {})
+        if financial_summary:
+            total_income = financial_summary.get('total_income', 0)
+            total_expense = financial_summary.get('total_expense', 0)
+            reply += f"\n\n💰 Total Income: ₹{int(total_income):,}"
+            reply += f"\n💸 Total Expense: ₹{int(total_expense):,}"
+
+            cat_breakdown = financial_summary.get('category_breakdown', {})
+            if cat_breakdown:
+                top_category = max(cat_breakdown, key=cat_breakdown.get)
+                reply += f"\n\n📊 Highest spending category: {top_category}"
 
         # Ensure structure with mandatory narrative sections when needed
         if 'Here’s what I can infer so far' in context_str:

@@ -14,7 +14,7 @@ from typing import Optional
 
 from src.preprocess import clean_text
 from src.explainer  import explain_prediction, explain_anomaly
-from src.insights   import generate_all_insights
+from src.insights   import generate_all_insights, generate_expense_insights
 from src.forecaster import forecast_cashflow
 
 # ════════════════════════════════════════════════════════════
@@ -60,6 +60,64 @@ class ModelStore:
 
 # Singleton instance
 store = ModelStore()
+
+
+def compute_financial_summary(df, business_id):
+    """Return financial aggregation and breakdown for this business."""
+    if df is None or df.empty:
+        return {
+            "total_income": 0.0,
+            "total_expense": 0.0,
+            "net_profit": 0.0,
+            "category_breakdown": {},
+            "monthly_data": []
+        }
+
+    bdf = df[df['business_id'].astype(str).str.upper() == business_id.strip().upper()].copy()
+    if bdf.empty:
+        return {
+            "total_income": 0.0,
+            "total_expense": 0.0,
+            "net_profit": 0.0,
+            "category_breakdown": {},
+            "monthly_data": []
+        }
+
+    income_df = bdf[bdf['type'] == 'income']
+    expense_df = bdf[bdf['type'] == 'expense']
+
+    total_income = float(income_df['amount'].sum()) if not income_df.empty else 0.0
+    total_expense = float(expense_df['amount'].sum()) if not expense_df.empty else 0.0
+    net_profit = total_income - total_expense
+
+    category_breakdown = (expense_df.groupby('category')['amount'].sum().sort_values(ascending=False).to_dict()) if not expense_df.empty else {}
+
+    # Monthly aggregation
+    bdf['date'] = pd.to_datetime(bdf['date'], errors='coerce')
+    bdf['month'] = bdf['date'].dt.strftime('%b')
+
+    monthly_data_df = (
+        bdf.groupby(['month', 'type'])['amount']
+        .sum()
+        .unstack(fill_value=0)
+        .reset_index()
+    )
+
+    monthly_data_list = []
+    for _, row in monthly_data_df.iterrows():
+        monthly_data_list.append({
+            'month': row['month'],
+            'income': float(row.get('income', 0)),
+            'expense': float(row.get('expense', 0)),
+        })
+
+    return {
+        'total_income': total_income,
+        'total_expense': total_expense,
+        'net_profit': net_profit,
+        'category_breakdown': category_breakdown,
+        'monthly_data': monthly_data_list,
+    }
 
 
 # ════════════════════════════════════════════════════════════
@@ -166,6 +224,11 @@ def analyze_transaction(
             'severity': 'info',
         }]
     result['insights'] = insights
+
+    # ── STEP 3.5: Financial summary + expense insights ──────
+    financial_summary = compute_financial_summary(transaction_history, business_id) if transaction_history is not None else compute_financial_summary(pd.DataFrame(), business_id)
+    result['financial_summary'] = financial_summary
+    result['expense_insights'] = generate_expense_insights(financial_summary.get('category_breakdown', {}))
 
     # ── STEP 4: Cash Flow Forecast ──────────────────────────
     result['forecast'] = forecast_cashflow(business_id, current_balance, forecast_days)
