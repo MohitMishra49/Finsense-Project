@@ -307,15 +307,21 @@ def build_financial_context(
         f"{ml_insights_text}"
     )
 
+    monthly_grouped = df.copy()
+    monthly_grouped['month'] = monthly_grouped['date'].dt.to_period('M').astype(str) if 'date' in monthly_grouped.columns else ''
+    monthly_data = []
+    if 'month' in monthly_grouped.columns and not monthly_grouped.empty:
+        monthly_data = [
+            {'month': row['month'], 'income': float(row.get('income', 0)), 'expense': float(row.get('expense', 0))}
+            for _, row in monthly_grouped.groupby(['month', 'type'])['amount'].sum().unstack(fill_value=0).reset_index().iterrows()
+        ]
+
     financial_summary = {
         'total_income': float(total_income),
         'total_expense': float(total_expense),
         'net_profit': float(net_profit),
         'category_breakdown': {k: round(float(v), 2) for k, v in category_breakdown.items()},
-        'monthly_data': [
-            {'month': row['month'], 'income': float(row.get('income', 0)), 'expense': float(row.get('expense', 0))}
-            for _, row in bdf.groupby(['month', 'type'])['amount'].sum().unstack(fill_value=0).reset_index().iterrows()
-        ]
+        'monthly_data': monthly_data,
     }
 
     summary_dict = {
