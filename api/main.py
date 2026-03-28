@@ -14,6 +14,8 @@ from src.pipeline import analyze_transaction, store
 from src.insights import business_summary as generate_business_summary
 from src.chatbot_engine import build_financial_context, append_forecast_insights_to_response
 
+user_sessions = {}
+
 
 # ── App Setup ────────────────────────────────────────────────
 app = FastAPI(
@@ -290,9 +292,15 @@ def chat_endpoint(req: ChatRequest):
     if not hf_api_key:
         raise HTTPException(status_code=500, detail='Missing HF_API_KEY environment variable')
 
-    biz_id = req.business_id.strip().upper()
+    # Store and reuse business context per user session.
+    if req.business_id and req.business_id.strip():
+        biz_id = req.business_id.strip().upper()
+        user_sessions[req.user_id] = biz_id
+    else:
+        biz_id = user_sessions.get(req.user_id)
+
     if not biz_id:
-        raise HTTPException(status_code=400, detail='business_id is required')
+        raise HTTPException(status_code=400, detail='Please select or register a business first.')
 
     history = get_history()
     if history is None:
