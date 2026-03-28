@@ -319,9 +319,11 @@ def chat_endpoint(req: ChatRequest):
             transaction_history=history,
         )
 
+    print("DEBUG: business_name =", req.business_name)
     summary, context_str = build_financial_context(
         biz_id,
         user_id=req.user_id,
+        business_name=req.business_name,
         business_type=req.business_type,
         category=req.category,
         monthly_revenue=req.monthly_revenue,
