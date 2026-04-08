@@ -18,46 +18,38 @@ def _load_cashflow():
     if _cashflow_df is not None:
         return
 
-    # Prefer the per-business file, fall back to old file
-    paths = [
-        os.path.join('data', 'daily_cashflow_by_business.csv'),
-        os.path.join('data', 'daily_cashflow.csv'),
-    ]
-    for path in paths:
-        if os.path.exists(path):
-            _cashflow_df = pd.read_csv(path)
-            _cashflow_df['date'] = pd.to_datetime(_cashflow_df['date'])
-            print(f"[Forecaster] Loaded {path} — "
-                  f"{'per-business' if 'business_id' in _cashflow_df.columns else 'global'}")
-            return
+    path = os.path.join('data', 'daily_cashflow_by_business.csv')
+    if not os.path.exists(path):
+        raise FileNotFoundError("daily_cashflow_by_business.csv is required")
 
-    raise FileNotFoundError("No cashflow CSV found in data/")
+    _cashflow_df = pd.read_csv(path)
+    _cashflow_df['date'] = pd.to_datetime(_cashflow_df['date'])
+    print(f"[Forecaster] Loaded {path} - per-business")
 
 
 def get_business_cashflow(business_id: str) -> pd.DataFrame:
     """
     Returns the daily cashflow rows for a single business.
-    Falls back to global if no business_id column exists.
     """
     _load_cashflow()
     biz_id = business_id.strip().upper()
 
-    if 'business_id' in _cashflow_df.columns:
-        bdf = _cashflow_df[
-            _cashflow_df['business_id'].astype(str).str.upper() == biz_id
-        ].copy()
-        if bdf.empty:
-            # Business not in cashflow — derive from scratch
-            return pd.DataFrame()
-        return bdf.sort_values('date').reset_index(drop=True)
-    else:
-        # Old single-file — same data for everyone (legacy fallback)
-        return _cashflow_df.sort_values('date').reset_index(drop=True)
+    if 'business_id' not in _cashflow_df.columns:
+        return pd.DataFrame()
+
+    bdf = _cashflow_df[
+        _cashflow_df['business_id'].astype(str).str.upper() == biz_id
+    ].copy()
+    if bdf.empty:
+        return pd.DataFrame()
+    return bdf.sort_values('date').reset_index(drop=True)
 
 
 def forecast_cashflow(
     business_id:     str,
     current_balance: Optional[float] = None,
+    income:          Optional[float] = None,
+    expense:         Optional[float] = None,
     days:            int = 7,
 ) -> dict:
     """
@@ -100,11 +92,12 @@ def forecast_cashflow(
     std_daily = float(net_series.std()) if len(net_series) > 3 else abs(base_daily_net) * 0.15
     std_daily = min(std_daily, abs(base_daily_net) * 0.3)  # cap noise at 30%
 
-    # Starting balance
     if current_balance is not None:
-        start_balance = current_balance
+        start_balance = float(current_balance)
+    elif not bdf.empty:
+        start_balance = float(bdf['net_cashflow'].cumsum().iloc[-1])
     else:
-        start_balance = float(bdf['cumulative_balance'].iloc[-1])
+        start_balance = 0.0
 
     # Build forecast
     np.random.seed(42)  # reproducible for same business

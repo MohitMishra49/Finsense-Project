@@ -50,7 +50,7 @@ class ModelStore:
                                      for k, v in json.load(f).items()}
 
         self._loaded = True
-        print(f"✓ All models loaded | "
+        print(f"All models loaded | "
               f"Categories: {len(self.cat_meta['classes'])}")
 
     @property
@@ -131,6 +131,8 @@ def analyze_transaction(
     transaction_history: Optional[pd.DataFrame] = None,
     forecast_days:       int = 7,
     current_balance:     Optional[float] = None,
+    income:              Optional[float] = None,
+    expense:             Optional[float] = None,
 ) -> dict:
     """
     THE MAIN PIPELINE.
@@ -160,13 +162,37 @@ def analyze_transaction(
             'amount':      amount,
             'user_id':     user_id,
             'business_id': business_id,
+            'income':      income,
+            'expense':     expense,
+            'current_balance': current_balance,
         }
     }
 
+    biz_id = business_id.strip().upper()
+    if transaction_history is not None and not transaction_history.empty:
+        th = transaction_history.copy()
+        if 'business_id' in th.columns:
+            th['business_id'] = th['business_id'].astype(str).str.upper()
+            biz_history = th[th['business_id'] == biz_id].copy()
+        else:
+            biz_history = pd.DataFrame()
+    else:
+        biz_history = pd.DataFrame()
+
+    print(f"[DEBUG] Transactions for {biz_id}:", len(biz_history))
+
     # ── STEP 1: Categorization + Explainability ─────────────
-    cleaned  = clean_text(description)
-    vec_inp  = store.vectorizer.transform([cleaned])
-    category = store.cat_model.predict(vec_inp)[0]
+    desc = clean_text(description.lower().strip()) if description else ""
+    print("[DEBUG] Description:", desc)
+    if not desc:
+        category = "misc"
+    else:
+        try:
+            X = store.vectorizer.transform([desc])
+            category = store.cat_model.predict(X)[0]
+        except Exception:
+            category = "misc"
+    print("[DEBUG] Predicted category:", category)
 
     explanation = explain_prediction(
         description, category,
@@ -188,12 +214,12 @@ def analyze_transaction(
     iso_pred  = store.anomaly_model.predict(X_inp)[0]   # 1=normal, -1=anomaly
     iso_score = float(store.anomaly_model.score_samples(X_inp)[0])
 
-    # Z-score check using history (more interpretable)
-    if transaction_history is not None:
-        hist_amounts = transaction_history[
-            (transaction_history['user_id']   == user_id) &
-            (transaction_history['category']  == category) &
-            (transaction_history['type']      == 'expense')
+    # Z-score check using business-specific history (more interpretable)
+    if not biz_history.empty:
+        hist_amounts = biz_history[
+            (biz_history['user_id']   == user_id) &
+            (biz_history['category']  == category) &
+            (biz_history['type']      == 'expense')
         ]['amount'].tolist()
     else:
         hist_amounts = []
@@ -210,9 +236,9 @@ def analyze_transaction(
     }
 
     # ── STEP 3: Smart Insights ──────────────────────────────
-    if transaction_history is not None and len(transaction_history) > 10:
-        th = transaction_history.copy()
-        th['date'] = pd.to_datetime(th['date'])
+    if biz_history is not None and len(biz_history) > 10:
+        th = biz_history.copy()
+        th['date'] = pd.to_datetime(th['date'], errors='coerce')
         insights = generate_all_insights(
             th, business_id, user_id,
             category, amount
@@ -226,12 +252,23 @@ def analyze_transaction(
     result['insights'] = insights
 
     # ── STEP 3.5: Financial summary + expense insights ──────
-    financial_summary = compute_financial_summary(transaction_history, business_id) if transaction_history is not None else compute_financial_summary(pd.DataFrame(), business_id)
+    financial_summary = compute_financial_summary(biz_history, business_id)
     result['financial_summary'] = financial_summary
     result['expense_insights'] = generate_expense_insights(financial_summary.get('category_breakdown', {}))
 
     # ── STEP 4: Cash Flow Forecast ──────────────────────────
-    result['forecast'] = forecast_cashflow(business_id, current_balance, forecast_days)
+    net_input = float(income or 0) - float(expense or 0)
+    balance_override = None
+    if current_balance is not None:
+        balance_override = float(current_balance) + net_input
+
+    result['forecast'] = forecast_cashflow(
+        business_id,
+        current_balance=balance_override,
+        days=forecast_days,
+    )
+
+    print(f"[RESULT] {business_id} -> category: {category}, balance: {result['forecast'].get('start_balance', 0)}")
 
     # ── STEP 5: Summary (top-level for quick display) ───────
     top_insight = insights[0]['message'] if insights else None

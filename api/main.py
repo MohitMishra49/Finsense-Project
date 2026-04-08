@@ -58,19 +58,23 @@ def get_cashflow() -> Optional[pd.DataFrame]:
     if _cashflow_df is not None:
         return _cashflow_df
 
-    paths = [
-        os.path.join('data', 'daily_cashflow_by_business.csv'),
-        os.path.join('data', 'daily_cashflow.csv'),
-    ]
+    path = os.path.join('data', 'daily_cashflow_by_business.csv')
 
-    for path in paths:
-        if os.path.exists(path):
-            _cashflow_df = pd.read_csv(path)
-            if 'date' in _cashflow_df.columns:
-                _cashflow_df['date'] = pd.to_datetime(_cashflow_df['date'], errors='coerce')
-            return _cashflow_df
+    if os.path.exists(path):
+        _cashflow_df = pd.read_csv(path)
 
-    return None
+        if 'date' in _cashflow_df.columns:
+            _cashflow_df['date'] = pd.to_datetime(_cashflow_df['date'], errors='coerce')
+
+        # Validate required columns
+        required_cols = {'business_id', 'date', 'net_cashflow'}
+        if not required_cols.issubset(set(_cashflow_df.columns)):
+            raise ValueError("daily_cashflow_by_business.csv missing required columns")
+
+        return _cashflow_df
+
+    else:
+        raise FileNotFoundError("daily_cashflow_by_business.csv is required")
 
 
 def compute_forecast(business_id: str, days: int = 7, current_balance: Optional[float] = None) -> Optional[dict]:
@@ -86,8 +90,15 @@ def compute_forecast(business_id: str, days: int = 7, current_balance: Optional[
         return None
 
     bdf = cf[cf['business_id'].astype(str).str.upper() == biz_id].copy()
+    print(f"[DEBUG] Rows for {biz_id}:", len(bdf))
     if bdf.empty:
-        return None
+        return {
+            "business_id": biz_id,
+            "trend": "unknown",
+            "summary": "No cashflow data found for this business",
+            "daily": [],
+            "final_balance": 0
+        }
 
     bdf = bdf.sort_values('date').reset_index(drop=True)
     if 'net_cashflow' not in bdf.columns:
@@ -110,11 +121,14 @@ def compute_forecast(business_id: str, days: int = 7, current_balance: Optional[
     std_daily = min(std_daily, abs(base_daily_net) * 0.3) if abs(base_daily_net) > 0 else 1.0
 
     if current_balance is not None:
-        running_balance = float(current_balance)
-    elif 'cumulative_balance' in bdf.columns and not bdf['cumulative_balance'].dropna().empty:
-        running_balance = float(bdf['cumulative_balance'].iloc[-1])
+        starting_balance = float(current_balance)
+        running_balance = starting_balance
     else:
-        running_balance = 0.0
+        if 'cumulative_balance' in bdf.columns:
+            starting_balance = float(bdf['cumulative_balance'].iloc[-1])
+        else:
+            starting_balance = float(bdf['net_cashflow'].cumsum().iloc[-1])
+        running_balance = starting_balance
 
     np.random.seed(42)
     daily_forecast = []
@@ -140,6 +154,8 @@ def compute_forecast(business_id: str, days: int = 7, current_balance: Optional[
     final_balance = daily_forecast[-1]['balance']
     trend = 'growing' if base_daily_net > 0 else 'declining'
 
+    print(f"[FORECAST] {biz_id} → start: {starting_balance}, trend: {trend}")
+
     alert = None
     if min_balance < 0:
         low_day = next(d['day'] for d in daily_forecast if d['balance'] == min_balance)
@@ -164,7 +180,7 @@ def compute_forecast(business_id: str, days: int = 7, current_balance: Optional[
     return {
         'business_id': biz_id,
         'days': days,
-        'starting_balance': round(float(running_balance - sum(d['net_cashflow'] for d in daily_forecast)), 2),
+        'starting_balance': round(starting_balance, 2),
         'daily': daily_forecast,
         'trend': trend,
         'min_balance': round(min_balance, 2),
@@ -203,6 +219,8 @@ class TransactionRequest(BaseModel):
     amount: float
     user_id: str
     business_id: str
+    income: Optional[float] = None
+    expense: Optional[float] = None
     current_balance: Optional[float] = None
     forecast_days: int = 7
 
@@ -243,6 +261,8 @@ def analyze(req: TransactionRequest):
             transaction_history=history,
             forecast_days=req.forecast_days,
             current_balance=req.current_balance,
+            income=req.income,
+            expense=req.expense,
         )
 
         return result
@@ -266,6 +286,8 @@ def batch_analyze(req: BatchRequest):
                 transaction_history=history,
                 forecast_days=tx.forecast_days,
                 current_balance=tx.current_balance,
+                income=tx.income,
+                expense=tx.expense,
             )
             results.append({"status": "ok", "result": r})
         except Exception as e:
