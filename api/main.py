@@ -14,6 +14,8 @@ from src.pipeline import analyze_transaction, store
 from src.insights import business_summary as generate_business_summary
 from src.chatbot_engine import build_financial_context, append_forecast_insights_to_response
 
+# This file is the single FastAPI entrypoint for the application.
+# A temporary refactor copy was created earlier, but the final API lives in api/main.py.
 user_sessions = {}
 
 
@@ -237,24 +239,6 @@ def root():
         "service": "FinSense AI",
         "status": "running",
         "version": "1.0.0"
-    }
-
-
-@app.post("/test-analyze")
-def test_analyze(req: TransactionRequest):
-    """Test endpoint to verify request parsing."""
-    return {
-        "received": {
-            "description": req.description,
-            "amount": req.amount,
-            "user_id": req.user_id,
-            "business_id": req.business_id,
-            "current_balance": req.current_balance,
-            "forecast_days": req.forecast_days,
-            "income": req.income,
-            "expense": req.expense,
-        },
-        "message": f"Received transaction: {req.description} for ₹{req.amount} from business {req.business_id}"
     }
 
 
