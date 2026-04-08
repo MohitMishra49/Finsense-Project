@@ -12,7 +12,7 @@ import os
 from datetime import datetime
 from typing import Optional
 
-from src.preprocess import clean_text
+from src.preprocess import clean_text, rule_based_categorize
 from src.explainer  import explain_prediction, explain_anomaly
 from src.insights   import generate_all_insights, generate_expense_insights
 from src.forecaster import forecast_cashflow
@@ -187,11 +187,14 @@ def analyze_transaction(
     if not desc:
         category = "misc"
     else:
-        try:
-            X = store.vectorizer.transform([desc])
-            category = store.cat_model.predict(X)[0]
-        except Exception:
-            category = "misc"
+        # Rule-based classification for common patterns
+        category = rule_based_categorize(desc)
+        if category == "misc":  # Fallback to ML if rule-based fails
+            try:
+                X = store.vectorizer.transform([desc])
+                category = store.cat_model.predict(X)[0]
+            except Exception:
+                category = "misc"
     print("[DEBUG] Predicted category:", category)
 
     explanation = explain_prediction(

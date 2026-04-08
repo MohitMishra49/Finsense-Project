@@ -81,12 +81,24 @@ def forecast_cashflow(
     history = bdf.tail(30)
     net_series = history['net_cashflow'].values
 
-    # Weighted rolling: more recent = higher weight
-    window  = min(14, len(net_series))
-    weights = np.exp(np.linspace(-1, 0, window))
-    weights /= weights.sum()
-    recent  = net_series[-window:]
-    base_daily_net = float(np.sum(recent * weights))
+    # Improved forecasting: exponential smoothing with trend
+    if len(net_series) >= 7:
+        # Simple exponential smoothing with alpha=0.3
+        alpha = 0.3
+        smoothed = [net_series[0]]
+        for i in range(1, len(net_series)):
+            smoothed.append(alpha * net_series[i] + (1 - alpha) * smoothed[-1])
+        
+        # Calculate trend from last 7 days
+        recent_trend = np.polyfit(range(7), smoothed[-7:], 1)[0]
+        base_daily_net = float(smoothed[-1] + recent_trend * 0.5)  # slight trend adjustment
+    else:
+        # Fallback to weighted average
+        window  = min(14, len(net_series))
+        weights = np.exp(np.linspace(-1, 0, window))
+        weights /= weights.sum()
+        recent  = net_series[-window:]
+        base_daily_net = float(np.sum(recent * weights))
 
     # Std for realistic noise
     std_daily = float(net_series.std()) if len(net_series) > 3 else abs(base_daily_net) * 0.15
@@ -95,7 +107,7 @@ def forecast_cashflow(
     if current_balance is not None:
         start_balance = float(current_balance)
     elif not bdf.empty:
-        start_balance = float(bdf['net_cashflow'].cumsum().iloc[-1])
+        start_balance = float(bdf['cumulative_balance'].iloc[-1])
     else:
         start_balance = 0.0
 
@@ -143,6 +155,9 @@ def forecast_cashflow(
         improvement = 0.0
         mom_str = ""
 
+    # Detect cashflow anomalies
+    anomalies = detect_cashflow_anomalies(business_id)
+
     return {
         'improvement_pct': improvement,
         'business_id':      business_id.upper(),
@@ -154,6 +169,7 @@ def forecast_cashflow(
         'min_balance':      round(min_balance, 2),
         'final_balance':    round(final_balance, 2),
         'alert':            alert,
+        'anomalies':        anomalies,
         'summary':          f"Projected balance after {days} days: ₹{int(final_balance):,} ({trend})",
     }
 
@@ -225,15 +241,37 @@ def _empty_forecast(business_id, balance, days):
     }
 
 
-def get_business_cashflow_stats(business_id: str) -> dict:
-    """Returns key stats for a business's cashflow — used by pipeline.py."""
+def detect_cashflow_anomalies(business_id: str) -> dict:
+    """
+    Detect anomalies in cashflow using mean and std deviation.
+    """
     bdf = get_business_cashflow(business_id)
-    if bdf.empty:
-        return {'mean_daily': 0, 'std_daily': 1000, 'last_balance': 50000, 'last_date': ''}
-
+    if bdf.empty or len(bdf) < 7:
+        return {'anomalies': [], 'message': 'Not enough data for anomaly detection'}
+    
+    net_series = bdf['net_cashflow'].values
+    mean_val = np.mean(net_series)
+    std_val = np.std(net_series)
+    
+    if std_val == 0:
+        return {'anomalies': [], 'message': 'No variation in cashflow'}
+    
+    anomalies = []
+    threshold = 2.0  # Z-score threshold
+    
+    for i, val in enumerate(net_series):
+        z_score = abs((val - mean_val) / std_val)
+        if z_score > threshold:
+            anomalies.append({
+                'date': str(bdf['date'].iloc[i].date()),
+                'amount': float(val),
+                'z_score': round(z_score, 2),
+                'deviation': 'high' if val > mean_val else 'low'
+            })
+    
     return {
-        'mean_daily':   float(bdf['net_cashflow'].mean()),
-        'std_daily':    float(bdf['net_cashflow'].std()),
-        'last_balance': float(bdf['cumulative_balance'].iloc[-1]),
-        'last_date':    str(bdf['date'].iloc[-1].date()),
+        'anomalies': anomalies,
+        'mean': round(mean_val, 2),
+        'std': round(std_val, 2),
+        'message': f'Found {len(anomalies)} anomalies in cashflow'
     }

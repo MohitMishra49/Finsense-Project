@@ -240,17 +240,31 @@ def root():
     }
 
 
-@app.get("/health")
-def health():
+@app.post("/test-analyze")
+def test_analyze(req: TransactionRequest):
+    """Test endpoint to verify request parsing."""
     return {
-        "status": "healthy",
-        "models_loaded": store.loaded
+        "received": {
+            "description": req.description,
+            "amount": req.amount,
+            "user_id": req.user_id,
+            "business_id": req.business_id,
+            "current_balance": req.current_balance,
+            "forecast_days": req.forecast_days,
+            "income": req.income,
+            "expense": req.expense,
+        },
+        "message": f"Received transaction: {req.description} for ₹{req.amount} from business {req.business_id}"
     }
 
 
 @app.post("/analyze-transaction")
 def analyze(req: TransactionRequest):
     try:
+        # Ensure models are loaded
+        if not store.loaded:
+            store.load()
+
         history = get_history()
 
         result = analyze_transaction(

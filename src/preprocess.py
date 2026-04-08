@@ -87,13 +87,63 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     df['cat_code'] = df['category'].astype('category').cat.codes
     return df
 
-def load_and_prepare(transactions_path: str,
-                     cashflow_path: str) -> tuple:
-    """Load datasets and apply full preparation."""
-    df = pd.read_csv(transactions_path)
-    cf = pd.read_csv(cashflow_path)
-    df = engineer_features(df)
-    cf['date'] = pd.to_datetime(cf['date'])
-    cf = cf.sort_values('date').reset_index(drop=True)
-    print(f"Loaded {len(df):,} transactions | {len(cf)} daily cashflow rows")
-    return df, cf
+def rule_based_categorize(text: str) -> str:
+    """
+    Rule-based categorization for common transaction patterns.
+    Returns 'misc' if no rule matches.
+    """
+    text = text.lower()
+    
+    # Food and dining
+    if any(word in text for word in ['food', 'restaurant', 'cafe', 'hotel', 'lunch', 'dinner', 'breakfast', 'snacks', 'meal', 'eat', 'drink', 'chai', 'coffee', 'juice']):
+        return 'food'
+    
+    # Transport
+    if any(word in text for word in ['taxi', 'auto', 'bus', 'train', 'flight', 'travel', 'petrol', 'fuel', 'uber', 'ola', 'transport']):
+        return 'transport'
+    
+    # Healthcare
+    if any(word in text for word in ['hospital', 'doctor', 'medicine', 'pharmacy', 'health', 'medical', 'clinic', 'dawai']):
+        return 'healthcare'
+    
+    # Utilities
+    if any(word in text for word in ['electricity', 'water', 'gas', 'internet', 'phone', 'mobile', 'bill', 'utility']):
+        return 'utilities'
+    
+    # Marketing
+    if any(word in text for word in ['ad', 'advertisement', 'promotion', 'social media', 'instagram', 'facebook', 'google', 'seo']):
+        return 'marketing'
+    
+    # Raw materials
+    if any(word in text for word in ['material', 'supplies', 'inventory', 'stock', 'maal']):
+        return 'raw_material'
+    
+    # Rent
+    if any(word in text for word in ['rent', 'lease', 'kiraya']):
+        return 'rent'
+    
+    # Salary
+    if any(word in text for word in ['salary', 'wage', 'payroll']):
+        return 'salary'
+    
+    # Shopping
+    if any(word in text for word in ['shopping', 'clothes', 'grocery', 'supermarket', 'amazon', 'flipkart']):
+        return 'shopping'
+    
+    # Education
+    if any(word in text for word in ['school', 'college', 'course', 'training', 'book', 'education']):
+        return 'education'
+    
+    # Entertainment
+    if any(word in text for word in ['movie', 'theater', 'game', 'entertainment', 'party']):
+        return 'entertainment'
+    
+    # Travel
+    if any(word in text for word in ['hotel', 'booking', 'trip', 'vacation', 'travel']):
+        return 'travel'
+    
+    # Subscriptions
+    if any(word in text for word in ['subscription', 'netflix', 'prime', 'membership']):
+        return 'subscriptions'
+    
+    return 'misc'
