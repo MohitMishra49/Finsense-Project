@@ -14,3 +14,4 @@ joblib==1.4.2
 pydantic==2.6.4
 
 requests==2.31.0
+python-dotenv==1.0.0

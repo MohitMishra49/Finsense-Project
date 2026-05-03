@@ -7,8 +7,11 @@ from typing import Optional, List
 import pandas as pd
 import numpy as np
 import os
+from dotenv import load_dotenv
 import requests
 from datetime import datetime, timedelta
+
+load_dotenv()
 
 from src.pipeline import analyze_transaction, store
 from src.insights import business_summary as generate_business_summary
