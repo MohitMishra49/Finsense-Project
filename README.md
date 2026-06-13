@@ -121,3 +121,6 @@ FinSense/
 ├── requirements.txt
 ├── runtime.txt
 └── README.md
+
+Live Demo - https://fin-sense-ai-jade.vercel.app/
+My Deployed Link - https://finsense-project.onrender.com
